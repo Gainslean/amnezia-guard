@@ -10,6 +10,7 @@ pkill -f "$AG_DIR/guard.sh" 2>/dev/null
 pfctl -a com.apple/000.AmneziaGuard -F all >/dev/null 2>&1
 rm -f /Library/LaunchAgents/com.amneziaguard.menubar.plist \
       /Library/LaunchDaemons/com.amneziaguard.daemon.plist \
-      /etc/newsyslog.d/amnezia-guard.conf
+      /etc/newsyslog.d/amnezia-guard.conf \
+      /etc/sudoers.d/amneziaguard
 rm -rf /Applications/AmneziaGuard.app "$AG_DIR"
 echo "AmneziaGuard удалён, правила сняты — интернет работает как обычно."

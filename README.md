@@ -21,12 +21,16 @@ the VPN is down. A shield in the menu bar shows the status and the live speed th
   milliseconds. Every 0.2 s it checks the firewall itself: if something disables pf or removes the
   rules, it puts them back.
 - **Fails closed.** If the service crashes, the rules stay loaded.
-- **Learns the VPN server by itself.** The server IP is learned once from Amnezia's own traffic,
-  so reconnecting is immediate even while the kill switch is on.
+- **Learns the VPN server by itself.** The server IP is read from the firewall's state table the
+  moment Amnezia connects (or, failing that, from its next keepalive packet within 30 s), so
+  reconnecting is immediate even while the kill switch is on. It keeps learning while the rule is off.
+- **Works alongside Amnezia's own kill switch.** The desktop app has its own pf rules with a list of
+  addresses it must reach to reconnect (its server, its API, sites you excluded) and the DNS it uses.
+  AmneziaGuard copies those lists, so Amnezia can always reconnect, while everything else stays blocked.
 - **Menu bar app.** Green, orange or red shield, live ↓/↑ speed, a 90-second traffic graph,
   the number of blocked packets, and a one-click leak test.
 - **Easy to turn off.** A big button to disable the rule, or disable it for 15 minutes and have it
-  re-enable itself. Requires an admin password or Touch ID.
+  re-enable itself. No password prompt: see [Password-free buttons](#password-free-buttons).
 
 ## Measured reaction times
 
@@ -44,8 +48,8 @@ CPU use at idle is about 1% of one core for the service and about 1% for the wat
 ## Requirements
 
 - macOS 13 or newer
-- AmneziaVPN. Tested with the App Store build (Network Extension, AmneziaWG protocol). The desktop
-  build is detected by process name too, but has not been tested.
+- AmneziaVPN. Tested with both the App Store build (Network Extension) and the desktop build
+  (with its own kill switch on), AmneziaWG protocol.
 - Xcode Command Line Tools to build (`xcode-select --install`)
 
 ## Install
@@ -73,6 +77,17 @@ will stay closed until you connect.
 
 The app's interface is in Russian.
 
+### Password-free buttons
+
+The installer adds `/etc/sudoers.d/amneziaguard`, which lets the user who ran the installer run
+exactly three commands as root without a password: `agctl on`, `agctl off` and `agctl off 15`.
+Nothing else is allowed. The trade-off: any program running as that user can also turn the kill
+switch off. If you prefer a password prompt, delete that file
+(`sudo rm /etc/sudoers.d/amneziaguard`) and the buttons fall back to the macOS admin dialog.
+
+This was added because on recent macOS the admin dialog opened from a menu bar app may not accept
+keyboard input.
+
 ## Command line
 
 ```bash
@@ -81,6 +96,7 @@ sudo "/Library/Application Support/AmneziaGuard/agctl" off 15   # off for 15 min
 sudo "/Library/Application Support/AmneziaGuard/agctl" on       # turn it back on
 "/Library/Application Support/AmneziaGuard/agctl" status        # current status
 sudo bash tools/leakwatch.sh 15   # listen 15 s and list anything leaving outside the VPN
+sudo bash tools/pfdiag.sh         # read-only firewall report (all anchors, tables, Amnezia sockets)
 ```
 
 ## Settings
@@ -91,6 +107,7 @@ sudo bash tools/leakwatch.sh 15   # listen 15 s and list anything leaving outsid
 |---|---|---|
 | `ALLOW_LAN` | `1` | Allow the local network (printer, AirDrop, NAS). DNS to the router stays blocked. `0` closes the LAN too. |
 | `ALLOW_SPLIT` | `0` | `1` lets through the addresses that Amnezia itself excludes from the VPN (split tunneling). With `0`, those sites stop working. |
+| `AMNEZIA_EXCEPTIONS` | `1` | Copy the addresses and DNS servers that Amnezia's own kill switch allows. Needed for the desktop app to reconnect. `0` allows only the tunnel and the learned server. |
 | `EXTRA_ALLOW` | empty | Extra VPN server IPs, space-separated, if a new server was not learned automatically. |
 | `PROC_PATTERN` | Amnezia process names | Regex used to find the Amnezia process. |
 
@@ -109,8 +126,11 @@ apps ──► utunN (Amnezia tunnel) ──► Amnezia encrypts ──► Wi-Fi
 - **`tools/agwatch.swift`** reads the kernel routing socket (interfaces, addresses, routes; it ignores
   the routes cloned for every new website) and checks pf 5 times a second, using `posix_spawn`
   instead of a shell to keep it cheap.
+- **`daemon/learn.sh`** learns the server IP from the pf state table and copies Amnezia's own
+  exceptions (`amn/110.allowNets` and `amn/310.blockDNS` tables) to disk, so they also work at boot.
 - **`daemon/rules.sh`** generates the ruleset: loopback, the Amnezia tunnel, DHCP, Amnezia's UDP port,
-  the learned server IPs, optionally the LAN, then `block drop quick all`.
+  DNS only to Amnezia's DNS servers (all other DNS is dropped), the learned server IPs, Amnezia's
+  exceptions, optionally the LAN, then `block drop quick all`.
 - **`app/`** is the menu bar app in Swift/AppKit. Speeds come from 64-bit interface counters
   (`NET_RT_IFLIST2`). The leak test tries a TCP connection to 1.1.1.1 bound to the physical
   interface, the way a leaking app would, and expects it to fail.
@@ -120,8 +140,8 @@ apps ──► utunN (Amnezia tunnel) ──► Amnezia encrypts ──► Wi-Fi
 - There is a short window at boot before the service starts and loads the rules. `/etc/pf.conf` is
   left untouched on purpose.
 - If something disables pf, there is a window of up to about 0.2 s before it is turned back on.
-- If you switch to a new Amnezia server while the kill switch is on and its IP is unknown, add it
-  with `EXTRA_ALLOW` or turn the rule off for 15 minutes once.
+- A new server is usually learned within a second. If it still is not, add it with `EXTRA_ALLOW` or
+  turn the rule off for 15 minutes once.
 
 ## Uninstall
 

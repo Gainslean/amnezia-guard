@@ -20,6 +20,7 @@ ag_list_csv() {
     | sort -u | paste -sd, - | sed 's/,/, /g'
 }
 
+# Исключения Amnezia: amnezia_nets.txt и amnezia_dns.txt (их пишет learn.sh).
 # Аргументы: $1 — интерфейсы туннеля (через пробел), $2 — UDP/TCP порты Amnezia (через пробел)
 ag_build_rules() {
   local tun_ifs="$1" ports="$2" servers split extra p i
@@ -29,10 +30,16 @@ ag_build_rules() {
   [ -n "$extra" ] && servers="${servers:+$servers, }$extra"
   split=""
   [ "${ALLOW_SPLIT:-0}" = "1" ] && split="$(ag_list_csv "$AG_DIR/split.txt")"
+  amn_nets=""; amn_dns=""
+  if [ "${AMNEZIA_EXCEPTIONS:-1}" = "1" ]; then
+    amn_nets="$(ag_list_csv "$AG_DIR/amnezia_nets.txt")"
+    amn_dns="$(ag_list_csv "$AG_DIR/amnezia_dns.txt")"
+  fi
 
   echo "# AmneziaGuard kill switch — generated $(date '+%Y-%m-%d %H:%M:%S')"
   echo "table <ag_servers> persist { $servers }"
   [ -n "$split" ] && echo "table <ag_split> persist { $split }"
+  [ -n "$amn_nets" ] && echo "table <ag_amnezia> persist { $amn_nets }"
 
   echo "pass quick on lo0 all"
   for i in $tun_ifs; do
@@ -48,12 +55,17 @@ ag_build_rules() {
     echo "pass out quick proto udp from any port $p to any"
     echo "pass out quick proto tcp from any port $p to any"
   done
+  # DNS мимо туннеля: только тот, что разрешает себе сама Amnezia; остальной — в никуда
+  [ -n "$amn_dns" ] && echo "pass out quick proto { tcp udp } to { $amn_dns } port 53"
+  echo "block drop out quick proto { tcp udp } to any port { 53, 853 }"
+
   echo "pass out quick to <ag_servers>"
   [ -n "$split" ] && echo "pass out quick to <ag_split>"
+  # исключения kill switch самой Amnezia: её сервер, её API, сайты-исключения
+  [ -n "$amn_nets" ] && echo "pass out quick to <ag_amnezia>"
 
   if [ "${ALLOW_LAN:-1}" = "1" ]; then
-    # DNS к роутеру запрещаем — иначе запросы утекают провайдеру
-    echo "block drop out quick proto { tcp udp } to $LAN4 port { 53, 853 }"
+    # DNS к роутеру уже запрещён выше — иначе запросы утекали бы провайдеру
     echo "pass out quick inet to $LAN4"
     echo "pass in quick inet from $LAN4"
     echo "pass quick on { awdl0 llw0 } all"

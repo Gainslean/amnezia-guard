@@ -15,11 +15,13 @@ PATH="${AG_TEST_PATH:+$AG_TEST_PATH:}/usr/bin:/bin:/usr/sbin:/sbin"  # AG_TEST_P
 PROC_PATTERN='AmneziaVPNNetworkExtension|AmneziaVPN-service|amneziawg-go'
 ALLOW_LAN=1
 ALLOW_SPLIT=0
+AMNEZIA_EXCEPTIONS=1   # пропускать исключения kill switch самой Amnezia (её сервер, API, DNS)
 EXTRA_ALLOW=""
 FAST_INTERVAL=0.25  # дешёвая проверка pf и интерфейсов (4 раза в секунду)
 FULL_INTERVAL=5     # полная проверка на всякий случай (основное — по событиям)
 
 . "$AG_DIR/rules.sh"
+. "$AG_DIR/learn.sh"
 [ -f "$AG_DIR/config" ] && . "$AG_DIR/config"
 
 LAST_HASH=""
@@ -78,51 +80,6 @@ scan_sockets() {
     | grep -E '^[0-9]+$' | sort -un | paste -sd' ' -)"
   SOCK_REMOTES="$(awk '$2 ~ /->/ {split($2,a,"->"); r=a[2]; sub(/:[0-9]+$/,"",r); gsub(/[\[\]]/,"",r); print r}' \
     "$TMP_RULES.sock" | grep -v -E '^(127\.|::1$|localhost)' | sort -u)"
-}
-
-remember_servers() {
-  local ip changed=0
-  touch "$AG_DIR/servers.txt"
-  for ip in "$@"; do
-    [ -z "$ip" ] && continue
-    if ! grep -qx "$ip" "$AG_DIR/servers.txt"; then
-      echo "$ip" >> "$AG_DIR/servers.txt"; changed=1
-      log "выучен сервер Amnezia: $ip"
-    fi
-  done
-  [ "$changed" = 1 ] && LAST_HASH=""
-  return 0
-}
-
-# Для WireGuard/AWG сокет «не подключён» — адрес сервера видно только по пакетам.
-# Один раз на порт слушаем до 4 секунд в фоне (основной цикл не ждёт), потом будим службу.
-learn_udp_server() {
-  local port="$1" phys="$2"
-  case "$LEARNED_PORTS" in *" $port "*) return ;; esac
-  LEARNED_PORTS="$LEARNED_PORTS$port "
-  [ -z "$phys" ] && return
-  (
-    out="$(mktemp -t aglearn)"
-    tcpdump -n -l -c 3 -i "$phys" "udp and src port $port" > "$out" 2>/dev/null &
-    pid=$!
-    sleep 4; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    remember_servers $(awk '{print $5}' "$out" | sed -E 's/\.[0-9]+:?$//' | grep -E '^[0-9a-fA-F.:]+$' | sort -u)
-    rm -f "$out"
-    kill -USR1 $$ 2>/dev/null
-  ) &
-}
-
-# Раздельное туннелирование: адреса, которые Amnezia сама пускает мимо VPN
-learn_split() {
-  local phys="$1" gw="$2"
-  [ "$ALLOW_SPLIT" = "1" ] && [ -n "$gw" ] || return 0
-  netstat -rn -f inet | awk -v gw="$gw" -v ifc="$phys" '
-    $2==gw && $NF==ifc && $1!="default" {
-      d=$1; m=""; if (index(d,"/")) { split(d,x,"/"); d=x[1]; m=x[2] }
-      n=split(d,o,"."); if (m=="") m=(n==4?32:n*8)
-      while (n<4) { d=d".0"; n++ }
-      print d"/"m }' >> "$AG_DIR/split.txt"
-  sort -u -o "$AG_DIR/split.txt" "$AG_DIR/split.txt"
 }
 
 blocked_now() {
@@ -186,13 +143,16 @@ tick() {
     done
   fi
 
+  # учимся всегда, даже при выключенной защите: тогда включение потом сработает сразу
+  sync_amnezia_exceptions
+  if [ "$vpn_up" = true ]; then
+    for p in $ports; do learn_udp_server "$p" "$phys"; done
+    learn_split "$phys" "$gw"
+  fi
+
   if is_enabled; then
     en=true
     apply_rules "$tun" "$ports"
-    if [ "$vpn_up" = true ]; then
-      for p in $ports; do learn_udp_server "$p" "$phys"; done
-      learn_split "$phys" "$gw"
-    fi
   elif [ -n "$LAST_HASH" ] || anchor_loaded; then
     pfctl -a "$ANCHOR" -F all >/dev/null 2>&1
     LAST_HASH=""; log "защита ВЫКЛЮЧЕНА пользователем"

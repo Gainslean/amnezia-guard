@@ -67,21 +67,3 @@ enum LeakTest {
         a.runModal()
     }
 }
-
-/// Команды службе с правами администратора (macOS спросит пароль / Touch ID).
-enum Privileged {
-    @discardableResult
-    static func agctl(_ args: String) -> Bool {
-        let cmd = "'\(agDir)/agctl' \(args)"
-        let src = "do shell script \"\(cmd)\" with administrator privileges"
-        var err: NSDictionary?
-        NSAppleScript(source: src)?.executeAndReturnError(&err)
-        if let err, (err[NSAppleScript.errorNumber] as? Int) != -128 {
-            let a = NSAlert()
-            a.messageText = "Не удалось выполнить команду"
-            a.informativeText = (err[NSAppleScript.errorMessage] as? String) ?? "\(err)"
-            a.runModal()
-        }
-        return err == nil
-    }
-}

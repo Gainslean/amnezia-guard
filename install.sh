@@ -29,7 +29,7 @@ fi
 echo "• служба"
 mkdir -p "$AG_DIR"
 install -m 755 -o root -g wheel daemon/guard.sh daemon/agctl "$AG_DIR/"
-install -m 644 -o root -g wheel daemon/rules.sh "$AG_DIR/"
+install -m 644 -o root -g wheel daemon/rules.sh daemon/learn.sh "$AG_DIR/"
 install -m 755 -o root -g wheel build/agwatch "$AG_DIR/"
 [ -f "$AG_DIR/config" ] || install -m 644 -o root -g wheel daemon/config.default "$AG_DIR/config"
 [ -f "$AG_DIR/enabled" ] || echo 1 > "$AG_DIR/enabled"
@@ -52,6 +52,22 @@ chown root:wheel "$DAEMON"; chmod 644 "$DAEMON"
 echo "/var/log/amnezia-guard.log  644  3  1000  *  J" > /etc/newsyslog.d/amnezia-guard.conf
 launchctl bootout system "$DAEMON" 2>/dev/null || true
 launchctl bootstrap system "$DAEMON"
+
+echo "• кнопки значка без окна пароля (узкое правило sudo)"
+SUDOERS=/etc/sudoers.d/amneziaguard
+AGCTL_ESC="$(printf '%s' "$AG_DIR/agctl" | sed 's/ /\\ /g')"
+TMP_S="$(mktemp)"
+cat > "$TMP_S" <<SU
+# AmneziaGuard: значок в строке меню включает и выключает защиту без окна пароля.
+# Разрешены ТОЛЬКО эти три команды; agctl и его папка принадлежат root.
+$USER_NAME ALL=(root) NOPASSWD: $AGCTL_ESC on, $AGCTL_ESC off, $AGCTL_ESC off 15
+SU
+if visudo -cf "$TMP_S" >/dev/null 2>&1; then
+  install -m 440 -o root -g wheel "$TMP_S" "$SUDOERS"
+else
+  echo "  правило не прошло проверку visudo — пропущено (кнопки будут спрашивать пароль)"
+fi
+rm -f "$TMP_S"
 
 echo "• приложение"
 launchctl bootout "gui/$USER_ID" "$AGENT" 2>/dev/null || true
