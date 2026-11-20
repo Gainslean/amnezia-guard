@@ -27,7 +27,7 @@ FULL_INTERVAL=5     # полная проверка на всякий случа
 LAST_HASH=""
 RULES_OK=false
 BLOCKED_BASE=0
-LEARNED_PORTS=" "
+LEARNED_PORTS=" "; PREV_CAND=""; LEARNER_PID=""
 TMP_RULES="$(mktemp -t agrules)"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
@@ -74,12 +74,29 @@ find_tun() {
 }
 
 # Порты сокетов Amnezia и удалённые адреса (серверы)
+# Сокет туннеля AWG/WireGuard — один долгоживущий UDP-сокет не на петле. Кроме него у Amnezia
+# бывают сотни коротких: DNS-запросы, связь между её процессами через [::1]. Их не берём:
+#   - TCP, петля (127.*, [::1]) и соединения на порт 53/853 — отбрасываем сразу;
+#   - если кандидатов больше 3, берём только те, что живы со прошлой проверки.
+# SOCK_REMOTES — куда подключены именно эти сокеты (для WireGuard обычно пусто).
 scan_sockets() {
-  awk '$5 ~ /^IPv[46]$/ {print $8, $9}' "$TMP_RULES.lsof" > "$TMP_RULES.sock"
-  SOCK_PORTS="$(awk '{split($2,a,"->"); n=split(a[1],b,":"); print b[n]}' "$TMP_RULES.sock" \
-    | grep -E '^[0-9]+$' | sort -un | paste -sd' ' -)"
-  SOCK_REMOTES="$(awk '$2 ~ /->/ {split($2,a,"->"); r=a[2]; sub(/:[0-9]+$/,"",r); gsub(/[\[\]]/,"",r); print r}' \
-    "$TMP_RULES.sock" | grep -v -E '^(127\.|::1$|localhost)' | sort -u)"
+  local cand stable
+  awk '$5 ~ /^IPv[46]$/ && $8 == "UDP" {print $9}' "$TMP_RULES.lsof" \
+    | grep -v -E '^(127\.|\[::1\]|localhost)' | grep -v -E -- '->(127\.|\[::1\])' \
+    | grep -v -E ':(53|853)$' > "$TMP_RULES.sock"
+  cand="$(awk '{split($1,a,"->"); n=split(a[1],b,":"); print b[n]}' "$TMP_RULES.sock" \
+    | grep -E '^[0-9]+$' | sort -un)"
+  if [ "$(printf '%s\n' "$cand" | grep -c .)" -gt 3 ]; then
+    stable="$(printf '%s\n' "$cand" | grep -Fx -f <(printf '%s\n' $PREV_CAND) 2>/dev/null)"
+    PREV_CAND="$cand"; cand="$stable"
+  else
+    PREV_CAND="$cand"
+  fi
+  SOCK_PORTS="$(printf '%s\n' $cand | grep . | head -3 | paste -sd' ' -)"
+  SOCK_REMOTES="$(for p in $SOCK_PORTS; do
+      awk -v p="$p" '{split($1,a,"->"); n=split(a[1],b,":"); if (b[n]==p && a[2]!="") {
+        r=a[2]; sub(/:[0-9]+$/,"",r); gsub(/[\[\]]/,"",r); print r } }' "$TMP_RULES.sock"
+    done | sort -u)"
 }
 
 blocked_now() {
@@ -144,7 +161,7 @@ tick() {
   fi
 
   # учимся всегда, даже при выключенной защите: тогда включение потом сработает сразу
-  sync_amnezia_exceptions
+  sync_amnezia_exceptions; clean_servers
   if [ "$vpn_up" = true ]; then
     for p in $ports; do learn_udp_server "$p" "$phys"; done
     learn_split "$phys" "$gw"

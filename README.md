@@ -140,6 +140,9 @@ apps ──► utunN (Amnezia tunnel) ──► Amnezia encrypts ──► Wi-Fi
 - There is a short window at boot before the service starts and loads the rules. `/etc/pf.conf` is
   left untouched on purpose.
 - If something disables pf, there is a window of up to about 0.2 s before it is turned back on.
+- The tunnel socket is detected only for UDP protocols (AmneziaWG, WireGuard). With a TCP-based
+  protocol (OpenVPN over TCP, Cloak, XRay) the server must come from Amnezia's own exception list
+  (desktop app) or from `EXTRA_ALLOW`.
 - A new server is usually learned within a second. If it still is not, add it with `EXTRA_ALLOW` or
   turn the rule off for 15 minutes once.
 

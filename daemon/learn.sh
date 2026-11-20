@@ -9,6 +9,7 @@ remember_servers() {
   touch "$AG_DIR/servers.txt"
   for ip in "$@"; do
     [ -z "$ip" ] && continue
+    printf '%s\n' "$ip" | grep -qE "$IP_RE" || continue
     if ! grep -qx "$ip" "$AG_DIR/servers.txt"; then
       echo "$ip" >> "$AG_DIR/servers.txt"; changed=1
       log "выучен сервер Amnezia: $ip"
@@ -18,13 +19,24 @@ remember_servers() {
   return 0
 }
 
+# Чистка списка серверов от того, что сервером быть не может: DNS самой Amnezia и сеть Apple 17/8
+# (раньше они попадали туда по ошибке из её DNS-запросов и служебных соединений).
+clean_servers() {
+  local f="$AG_DIR/servers.txt" bad
+  [ -s "$f" ] || return 0
+  bad="$(grep -E '^17\.' "$f"; grep -v -E "$IP_RE" "$f"; grep -Fx -f "$AG_DIR/amnezia_dns.txt" "$f" 2>/dev/null)"
+  [ -z "$bad" ] && return 0
+  grep -v -Fx -f <(printf '%s\n' $bad) "$f" > "$f.tmp"; mv -f "$f.tmp" "$f"
+  log "из списка серверов убрано лишнее: $(printf '%s ' $bad)"; LAST_HASH=""
+}
+
 # Куда идут UDP-пакеты с порта $1 — по таблице состояний pf (мгновенно, без ожидания пакетов).
 # Формат строки: «ALL udp 192.168.1.30:49596 -> 194.152.137.38:51820 MULTIPLE:MULTIPLE».
 servers_from_states() {
   pfctl -ss 2>/dev/null | awk -v p="$1" '
     { for (i = 2; i < NF; i++) if ($i == "->") {
         src = $(i-1); dst = $(i+1)
-        if (src ~ ("[:\\[]" p "\\]?$") && $0 ~ /udp/) {
+        if (src ~ ("[:\\[]" p "\\]?$") && $0 ~ /udp/ && dst !~ /[:\[](53|853)\]?$/) {
           sub(/\[[0-9]+\]$/, "", dst); sub(/:[0-9]+$/, "", dst); print dst } } }' | sort -u
 }
 
@@ -35,12 +47,14 @@ learn_udp_server() {
   local port="$1" phys="$2" ips
   case "$LEARNED_PORTS" in *" $port "*) return ;; esac
   ips="$(servers_from_states "$port")"
-  LEARNED_PORTS="$LEARNED_PORTS$port "
-  if [ -n "$ips" ]; then remember_servers $ips; return; fi
+  if [ -n "$ips" ]; then LEARNED_PORTS="$LEARNED_PORTS$port "; remember_servers $ips; return; fi
   [ -z "$phys" ] && return
+  # слушаем не больше одного порта за раз
+  [ -n "$LEARNER_PID" ] && kill -0 "$LEARNER_PID" 2>/dev/null && return
+  LEARNED_PORTS="$LEARNED_PORTS$port "
   (
     out="$(mktemp -t aglearn)"
-    tcpdump -n -l -c 1 -i "$phys" "udp and src port $port" > "$out" 2>/dev/null &
+    tcpdump -n -l -c 1 -i "$phys" "udp and src port $port and not dst port 53 and not dst port 853" > "$out" 2>/dev/null &
     pid=$!
     for _ in $(seq 1 30); do sleep 1; [ -s "$out" ] && break; done
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
@@ -49,6 +63,7 @@ learn_udp_server() {
     rm -f "$out"
     kill -USR1 $$ 2>/dev/null
   ) &
+  LEARNER_PID=$!
 }
 
 # Kill switch самой Amnezia держит в pf таблицы исключений: allownets (её сервер, её API,

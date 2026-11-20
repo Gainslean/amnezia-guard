@@ -88,6 +88,8 @@ sudo "/Library/Application Support/AmneziaGuard/agctl" on
 - `AMNEZIA_EXCEPTIONS=1`: пропускать адреса и DNS, которые разрешает себе kill switch самой Amnezia.
   Нужно, чтобы десктопная Amnezia могла переподключиться. `0` — только туннель и выученный сервер.
 - `EXTRA_ALLOW="1.2.3.4"`: добавить IP сервера вручную, если сервер сменился при включённой защите.
+  Нужно и для протоколов поверх TCP (OpenVPN TCP, Cloak, XRay) в версии Amnezia из App Store:
+  служба сама распознаёт только UDP-туннель (AmneziaWG, WireGuard).
 
 ## Удаление
 
